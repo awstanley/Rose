@@ -1,6 +1,7 @@
-This is the software license for Capstone Detours.
+This is the software license for `Rose`.
+See http://github.com/awstanley/Rose for more information on Rose.
 
-See http://www.capstone-engine.org for further information.
+--- 
 
 Copyright (c) 2016, A.W. Stanley.
 All rights reserved.
