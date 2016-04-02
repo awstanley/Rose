@@ -6,6 +6,12 @@
 // Header (defines Detour, contains includes).
 #include <Rose.hpp>
 
+// memset, etc.
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <limits.h>
+
 // Capstone (the backend/disassembler)
 #include <capstone/capstone.h>
 
@@ -93,8 +99,12 @@ namespace Rose
 		size_t &preJumpInstructions,
 		size_t &preJumpBytes)
 	{
+		// Reset the variables
 		bytes = 0;
 		instructions = 0;
+		preJumpBytes = 0;
+		preJumpInstructions = 0;
+
 		cs_insn *insns;
 		bool found = false;
 
@@ -102,7 +112,7 @@ namespace Rose
 		uint8_t *pos = target;
 
 #if defined __ROSE_LOUD__
-		printf("Pre-scanning function:\n")
+		printf("Pre-scanning function:\n");
 #endif//__ROSE_LOUD__
 
 		while (!found)
@@ -118,7 +128,8 @@ namespace Rose
 				}
 
 #if defined __ROSE_LOUD__
-				printf("\t%s %s\n",
+				printf("\t[% 4i] %s %s\n",
+					i,
 					insns[i].mnemonic,
 					insns[i].op_str);
 #endif//__ROSE_LOUD__
@@ -195,11 +206,18 @@ namespace Rose
 	bool SetProtection(void* address, size_t len, int prot)
 	{
 		// Required to perform cross-page protection changes.
-		static size_t page = sysconf(_SC_PAGESIZE);
+		static uintptr_t page = 0;
+		if(page == 0)
+		{
+			page = sysconf(_SC_PAGESIZE);
+#if defined __ROSE_LOUD__
+		printf("[ROSE] Page size: 0x%016x\n", page);
+#endif//defined __ROSE_LOUD__
+		}
 
 		// This just saves some space and some calculations below
-		// at the cost of 4 bytes.
-		static size_t mask = (page - 1);
+		// at the cost of 4-8 bytes.
+		static uintptr_t mask = page - 1;
 
 		// Align to the first page.
 		// An example to clarify this for people who might misguidedly try to
@@ -220,13 +238,25 @@ namespace Rose
 		//
 		// This aligns to the start of the page through the power of masking.
 		// (So please stop "fixing" it then complaining...)
-		uintptr_t page1 = (uintptr_t)(address + mask) & ~mask;
+		uintptr_t page1 = ((uintptr_t)(address + mask) & ~mask) - page;
+
+#if defined __ROSE_LOUD__
+		printf("[ROSE] Protection\n"
+			"\tMask:    0x% 16x\n"
+			"\tLen:     0x% 16x\n"
+			"\tAddress: 0x% 16x\n"
+			"\tPage #1: 0x% 16x\n",
+			mask, len, address, page1);
+#endif//defined __ROSE_LOUD__
 
 		// We know we need a page1, so we set the protection, and we know
 		// from man(2) that mprotect should return 0.
 		// So apply to the address of page 1, the size
 		if(mprotect((void*)page1, page, prot) != 0)
 		{
+#if defined __ROSE_LOUD__
+		printf("[ROSE] Protection setting failed %i\n", 1);
+#endif//defined __ROSE_LOUD__
 			return false;
 		}
 
@@ -236,6 +266,9 @@ namespace Rose
 		uintptr_t page2 = (uintptr_t)(address + (len) + page - 1) & ~(mask);
 		if(page1 == page2)
 		{
+#if defined __ROSE_LOUD__
+		printf("[ROSE] Protection setting done; only one page was required.\n");
+#endif//defined __ROSE_LOUD__
 			return true;
 		}
 
@@ -248,6 +281,9 @@ namespace Rose
 		// Anyway, protect page2 if you're still here :)
 		if(mprotect((void*)page2, page, prot) != 0)
 		{
+#if defined __ROSE_LOUD__
+		printf("[ROSE] Protection setting failed %i\n", 2);
+#endif//defined __ROSE_LOUD__
 			return false;
 		}
 		return true;
@@ -288,6 +324,7 @@ namespace Rose
 			throw ProtectionExceptionARose("Unable to reprotect original region.", mOriginal);
 		}
 
+#if defined _WIN32 || defined _WIN64
 #if defined __ROSE_FLUSH__
 		if (FlushInstructionCache(GetCurrentProcess(),
 			(const void*)mOriginal, mByteCount) == 0)
@@ -295,6 +332,7 @@ namespace Rose
 			throw ProtectionExceptionARose("Cache failed to flush.", mOriginal);
 		}
 #endif//defined __ROSE_FLUSH__
+#endif//defined _WIN32 || defined _WIN64
 		return true;
 	}
 
@@ -365,12 +403,20 @@ namespace Rose
 		size_t instructionCount = 0;
 		size_t byteCount = 0;
 
+#if defined __ROSE_LOUD__
+		printf("[ROSE] Getting disassembly information from Capstone.\n");
+#endif//defined __ROSE_LOUD__
+
 		// This will be *far* more important in the future.
 		GetDisassemblyCounts(
 			instructionCount, byteCount,
 			handle, mOriginal,
 			mInstructionCount, mByteCount
 		);
+
+#if defined __ROSE_LOUD__
+		printf("[ROSE] Received disassembly information from Capstone.\n");
+#endif//defined __ROSE_LOUD__
 
 		// For now, nothing Capstoney really happens; in the future,
 		// maybe a wholesale function rebuild.
@@ -387,6 +433,10 @@ namespace Rose
 			throw BackendExceptionARose("Function too small to detour.");
 		}
 
+#if defined __ROSE_LOUD__
+		printf("[ROSE] Building trampoline.\n");
+#endif//defined __ROSE_LOUD__
+
 		// The trampoline itself is a jump and any replaced operations.
 		// How it works, and why it's a "trampoline" is it performs
 		// the initial (clobbered) operations and then the operation is
@@ -395,11 +445,20 @@ namespace Rose
 			AbsoluteJumpSize + mByteCount
 		);
 
+#if defined __ROSE_LOUD__
+		printf("[ROSE] Copying %i bytes from Original (%p) to Trampoline (%p).\n",
+			mByteCount, mOriginal, mTrampoline);
+#endif//defined __ROSE_LOUD__
+
 		// Copy the original bytes into the trampoline,
 		// then write a jump to return.
 		memcpy(mTrampoline, mOriginal, mByteCount);
 		WriteJump(mTrampoline + mByteCount,
 			mOriginal + mByteCount);
+
+#if defined __ROSE_LOUD__
+		printf("[ROSE] Performing a backup of the original data.\n");
+#endif//defined __ROSE_LOUD__
 
 		// -- Optional --
 		// This is just so it can be restored later; it's so future
@@ -407,6 +466,10 @@ namespace Rose
 		// and then be sure it can be fixed later!
 		mBackupOriginal = (uint8_t*)ROSE_ALLOC(mByteCount);
 		memcpy(mBackupOriginal, mOriginal, mByteCount);
+
+#if defined __ROSE_LOUD__
+		printf("[ROSE] Making mTrampoline executable: %p\n", mTrampoline);
+#endif//defined __ROSE_LOUD__
 
 		// Set mTrampoline to be executable (and enable r/w).
 		if (!UNPROTECT(mTrampoline, AbsoluteJumpSize + mByteCount))
@@ -422,12 +485,38 @@ namespace Rose
 		// and so we can 'nop' ("do nothing instruction")
 		// the region first.
 
+#if defined __ROSE_LOUD__
+		printf("[ROSE] Setting RWE permissions to the original %i bytes at %p.\n",
+			mByteCount, mOriginal);
+#endif//defined __ROSE_LOUD__
+
 		if (!UNPROTECT(mOriginal, mByteCount))
 		{
 			throw ProtectionExceptionARose("Unable to unprotect original region.", mOriginal);
 		}
-		memset(mOriginal, 0x90, mByteCount);
+
+#if defined __ROSE_LOUD__
+		printf("[ROSE] Writing jump from original region to trampoline.\n");
+#endif//defined __ROSE_LOUD__
+
 		WriteJump(mOriginal, mTrampoline);
+
+		int trailingBytes = mByteCount - AbsoluteJumpSize;
+		if(trailingBytes > 0)
+		{
+#if defined __ROSE_LOUD__
+			printf("[ROSE] Setting %i trailing bytes to nop (0x90).\n",
+				mByteCount);
+#endif//defined __ROSE_LOUD__
+			memset(mOriginal + AbsoluteJumpSize, 0x90, trailingBytes);
+		}
+
+
+
+#if defined __ROSE_LOUD__
+		printf("[ROSE] Restoring permissions to the original %i bytes at %p.\n",
+			mByteCount, mOriginal);
+#endif//defined __ROSE_LOUD__
 
 		// It's not a big deal if this fails; we have Read/Write/Execute.
 		REPROTECT(mOriginal, mByteCount);
@@ -447,9 +536,9 @@ namespace Rose
 		// Optional spam/debug
 #if defined __ROSE_LOUD__
 		printf(
-			"Original:       %p\n"
-			"Detour:         %p\n"
-			"Trampoline:     %p\n",
+			"[ROSE] Original:       %p\n"
+			"[ROSE] Detour:         %p\n"
+			"[ROSE] Trampoline:     %p\n",
 			mOriginal, mDetour, mTrampoline
 		);
 #endif
