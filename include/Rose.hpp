@@ -40,14 +40,14 @@ namespace Rose
 	 *
 	 * @brief	An exception indicating a protection issue.
 	 */
-	class ProtectionExceptionARose : public std::runtime_error
+	class ProtectionExceptionARose : public ExceptionARose
 	{
 	private:
 		const void* mErrorAddress;
 	public:
 		typedef std::runtime_error _Mybase;
-		explicit ProtectionExceptionARose(const std::string& _Message, const void* errorAddress) : _Mybase(_Message.c_str()), mErrorAddress(errorAddress) { }
-		explicit ProtectionExceptionARose(const char* _Message, const void* errorAddress) : _Mybase(_Message), mErrorAddress(errorAddress) { }
+		explicit ProtectionExceptionARose(const std::string& _Message, const void* errorAddress) : ExceptionARose(_Message.c_str()), mErrorAddress(errorAddress) { }
+		explicit ProtectionExceptionARose(const char* _Message, const void* errorAddress) : ExceptionARose(_Message), mErrorAddress(errorAddress) { }
 		const void* GetErrorAddress() { return mErrorAddress; }
 	};
 
@@ -56,12 +56,12 @@ namespace Rose
 	 *
 	 * @brief	An exception indicating an error in the disassembler/backend.
 	 */
-	class BackendExceptionARose : public std::runtime_error
+	class BackendExceptionARose : public ExceptionARose
 	{
 	public:
 		typedef std::runtime_error _Mybase;
-		explicit BackendExceptionARose(const std::string& _Message) : _Mybase(_Message.c_str()) { }
-		explicit BackendExceptionARose(const char* _Message) : _Mybase(_Message) { }
+		explicit BackendExceptionARose(const std::string& _Message) : ExceptionARose(_Message.c_str()) { }
+		explicit BackendExceptionARose(const char* _Message) : ExceptionARose(_Message) { }
 	};
 
 	/**
