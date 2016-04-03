@@ -2,6 +2,15 @@
 All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](http://semver.org/).
 
+## [0.1.2] - 2016-04-03
+
+### Added
+- Additional checks and information;
+- Throw condition if a jump or call exists in the first 10-14 bytes.
+
+### Removed
+- Various checks and code; nothing *required* is gone, just redundant code.
+
 ## [0.1.1] - 2016-04-02
 
 This release comes from testing the original target project (`ermor-pretender`) on AMD64 and discovering various oversights not seen in the original testing done to the ported code (which was ported to Windows).  Rewrites and attempts to create clarity have caused issues which have since been fixed.

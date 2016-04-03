@@ -16,6 +16,8 @@ It exists for the purposes of allowing me to do so without being beholden to oth
 
 It uses the rather execellent BSD-licensed `Capstone Engine` to disassemble and verify what's happening is safe.  (At the moment it does less of this than I would like, but it does check the lengths -- at some stage it would probably be prudent to do some more complex/relocatation work.)
 
+As a note to those wondering: the reason I'm not using the `Hacker Disassembler Engine` (or HDE) is Capstone offers more or what I want, albeit at a performance cost.  Since the cost is in creation, and I want it done right (or to understand where it went wrong), Capstone is superior.
+
 
 
 ## Status
@@ -31,6 +33,8 @@ TODO will be tracked in `TODO.md`.
 
 
 ## Notes
+
+I cannot emphasise enough that **Capstone will not work in diet mode if a relocation is required**.  This is because `cs_insn_group` is used to check the groups.
 
 It is important to note that while this library is in alpha, it is being used.  While the testing is limited to whatever I need it for, I will respond to issues as they arise (if they arise).
 

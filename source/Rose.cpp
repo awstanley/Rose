@@ -12,6 +12,9 @@
 #include <string.h>
 #include <limits.h>
 
+// Pair
+#include <utility>
+
 // Capstone (the backend/disassembler)
 #include <capstone/capstone.h>
 
@@ -61,11 +64,16 @@
 namespace Rose
 {
 	// For now only x86/x86_64, so assume this.
-	const cs_arch CapstoneArchitecture = CS_ARCH_X86;
 #if ROSE_DETOURS_AMD64
+	const cs_arch CapstoneArchitecture = CS_ARCH_X86;
 	const cs_mode CapstoneMode = (cs_mode)(CS_MODE_64 + CS_MODE_LITTLE_ENDIAN);
 #elif ROSE_DETOURS_X86
+	const cs_arch CapstoneArchitecture = CS_ARCH_X86;
 	const cs_mode CapstoneMode = (cs_mode)(CS_MODE_32 + CS_MODE_LITTLE_ENDIAN);
+#elif ROSE_DETOURS_RPI
+	// todo
+	const cs_arch CapstoneArchitecture = CS_ARCH_ARM64;
+	const cs_mode CapstoneMode = 0;
 #endif
 
 	/**
@@ -84,6 +92,9 @@ namespace Rose
 	static const size_t AbsoluteJumpSize = 14;
 #elif ROSE_DETOURS_X86
 	static const size_t AbsoluteJumpSize = 10;
+#elif ROSE_DETOURS_RPI
+	// leave this broken to throw an error; we're not ready yet.
+	static const size_t AbsoluteJumpSize = ?;
 #endif
 
 	// Forwards
@@ -94,16 +105,20 @@ namespace Rose
 	//
 	// This is an internal function, don't expect API stability.
 	void GetDisassemblyCounts(
-		size_t &instructions, size_t &bytes,
 		csh &handle, uint8_t *target,
 		size_t &preJumpInstructions,
-		size_t &preJumpBytes)
+		size_t &preJumpBytes,
+		size_t &breakables)
 	{
+		// Details aren't needed if we avoid using cs_x86;
+		// this makes it harder, but that's fine,
+		// it's not *too* hard...
+		cs_option(handle, CS_OPT_DETAIL, CS_OPT_OFF);
+
 		// Reset the variables
-		bytes = 0;
-		instructions = 0;
 		preJumpBytes = 0;
 		preJumpInstructions = 0;
+		breakables = 0;
 
 		cs_insn *insns;
 		bool found = false;
@@ -111,43 +126,57 @@ namespace Rose
 		size_t count = 0;
 		uint8_t *pos = target;
 
+#if defined ROSE_DETOURS_X86 || ROSE_DETOURS_AMD64
 #if defined __ROSE_LOUD__
 		printf("Pre-scanning function:\n");
 #endif//__ROSE_LOUD__
 
-		while (!found)
+		// This is done with detail *off* so we can't just use the group.
+		// We could turn it on, but this is the most expensive Capstone work
+		// so it's probably best not to do that.
+		while (preJumpBytes <= AbsoluteJumpSize)
 		{
 			count = cs_disasm(handle, pos,
 				4096, (uint64_t)pos, 0, &insns);
 			for (size_t i = 0; i < count; i++)
 			{
-				if (bytes <= AbsoluteJumpSize)
+				// break on a bad instruction
+				// - this keeps alignment correct.
+				if (insns[i].id == X86_INS_INVALID)
 				{
-					preJumpInstructions++;
-					preJumpBytes += insns[i].size;
+					break;
 				}
 
 #if defined __ROSE_LOUD__
-				printf("\t[% 4i] %s %s\n",
-					i,
+				printf("[% 4i | % 6d | %p] %s %s\n",
+					i, bytes, insns[i].address,
 					insns[i].mnemonic,
 					insns[i].op_str);
 #endif//__ROSE_LOUD__
 
-				instructions++;
-				bytes += insns[i].size;
-				if (INSTRUCTION_RETURNS(insns[i].id))
+				if (preJumpBytes <= AbsoluteJumpSize)
 				{
-					found = true;
-					break;
+					preJumpInstructions++;
+					preJumpBytes += insns[i].size;
+
+					// Any jump or call is problematic in this region.
+					if(insns[i].id == X86_INS_CALL
+
+					// keep this as-is to avoid group checks
+					|| (insns[i].id >= X86_INS_JAE && insns[i].id <= X86_INS_JS)
+					)
+					{
+						breakables++;
+						break;
+					}
 				}
-			}
-			if (!found)
-			{
-				pos += 4096;
 			}
 			cs_free(insns, count);
 		}
+#endif//defined ROSE_DETOURS_X86 || ROSE_DETOURS_AMD64
+
+		// TODO: RPI.
+
 	}
 
 	/** 
@@ -393,15 +422,7 @@ namespace Rose
 			throw BackendExceptionARose("Unable to initialise Capstone\n");
 		}
 
-		// Details aren't needed if we avoid using cs_x86;
-		// this makes it harder, but that's fine,
-		// it's not *too* hard...
-		//
-		// Note: this may need to be toggled on later for safe rebuilding!
-		cs_option(handle, CS_OPT_DETAIL, CS_OPT_OFF);
-
-		size_t instructionCount = 0;
-		size_t byteCount = 0;
+		size_t breakables = 0;
 
 #if defined __ROSE_LOUD__
 		printf("[ROSE] Getting disassembly information from Capstone.\n");
@@ -409,52 +430,34 @@ namespace Rose
 
 		// This will be *far* more important in the future.
 		GetDisassemblyCounts(
-			instructionCount, byteCount,
 			handle, mOriginal,
-			mInstructionCount, mByteCount
+			mInstructionCount, mByteCount,
+			breakables
 		);
 
 #if defined __ROSE_LOUD__
 		printf("[ROSE] Received disassembly information from Capstone.\n");
 #endif//defined __ROSE_LOUD__
 
-		// For now, nothing Capstoney really happens; in the future,
-		// maybe a wholesale function rebuild.
-		//
-		// it's a lot of work (too much for now), so it's being 
-		// skipped.  Note that this will be the root of so many issues
-
-		// Close it as we're done.
-		cs_close(&handle);
-
 		// If capstone didn't find what we needed, we're doomed.
-		if (byteCount < AbsoluteJumpSize)
+		if (mByteCount < AbsoluteJumpSize)
 		{
+			cs_close(&handle);
 			throw BackendExceptionARose("Function too small to detour.");
 		}
 
-#if defined __ROSE_LOUD__
-		printf("[ROSE] Building trampoline.\n");
-#endif//defined __ROSE_LOUD__
+		// If breakables is set to be above 0 then the function is
+		// *extremely* volatile.  There are a few ways to fix this,
+		// none of them are particularly awesome, but here goes...
+		
+		// Only trigger a detailed review if things have gone sideways.
+		if (breakables != 0)
+		{
+			throw BackendExceptionARose("Function jump region contains volatile code.");
+		}
 
-		// The trampoline itself is a jump and any replaced operations.
-		// How it works, and why it's a "trampoline" is it performs
-		// the initial (clobbered) operations and then the operation is
-		// bounced back.
-		mTrampoline = (uint8_t*)ROSE_ALLOC(
-			AbsoluteJumpSize + mByteCount
-		);
-
-#if defined __ROSE_LOUD__
-		printf("[ROSE] Copying %i bytes from Original (%p) to Trampoline (%p).\n",
-			mByteCount, mOriginal, mTrampoline);
-#endif//defined __ROSE_LOUD__
-
-		// Copy the original bytes into the trampoline,
-		// then write a jump to return.
-		memcpy(mTrampoline, mOriginal, mByteCount);
-		WriteJump(mTrampoline + mByteCount,
-			mOriginal + mByteCount);
+		// Close it as we're done.
+		cs_close(&handle);
 
 #if defined __ROSE_LOUD__
 		printf("[ROSE] Performing a backup of the original data.\n");
@@ -466,6 +469,38 @@ namespace Rose
 		// and then be sure it can be fixed later!
 		mBackupOriginal = (uint8_t*)ROSE_ALLOC(mByteCount);
 		memcpy(mBackupOriginal, mOriginal, mByteCount);
+
+#if defined __ROSE_LOUD__
+		printf("[ROSE] Building trampoline.\n");
+#endif//defined __ROSE_LOUD__
+
+		// The trampoline itself is a jump and any replaced operations.
+		// How it works, and why it's a "trampoline" is it performs
+		// the initial (clobbered) operations and then the operation is
+		// bounced back.
+		//
+		// What's changing here is that if it needs a reallocation
+		// we need to do something, which will involve an instruction
+		// expansion in many cases.  There's a way to fix this, but it
+		// involves tracking the flow of instructions (i.e. where things
+		// go, why, etc.)
+
+		// This is the default behaviour.  It falls into the category
+		// Australians know as "she'll be right."
+		mTrampoline = (uint8_t*)ROSE_ALLOC(
+			AbsoluteJumpSize + mByteCount
+		);
+
+#if defined __ROSE_LOUD__
+			printf("[ROSE] Copying %i bytes from Original (%p) to Trampoline (%p).\n",
+				mByteCount, mOriginal, mTrampoline);
+#endif//defined __ROSE_LOUD__
+
+		// Copy the original bytes into the trampoline,
+		// then write a jump to return.
+		memcpy(mTrampoline, mOriginal, mByteCount);
+		WriteJump(mTrampoline + mByteCount,
+			mOriginal + mByteCount);
 
 #if defined __ROSE_LOUD__
 		printf("[ROSE] Making mTrampoline executable: %p\n", mTrampoline);
