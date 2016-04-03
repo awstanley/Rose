@@ -149,7 +149,7 @@ namespace Rose
 
 #if defined __ROSE_LOUD__
 				printf("[% 4i | % 6d | %p] %s %s\n",
-					i, bytes, insns[i].address,
+					i, preJumpBytes, insns[i].address,
 					insns[i].mnemonic,
 					insns[i].op_str);
 #endif//__ROSE_LOUD__
